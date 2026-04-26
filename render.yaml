@@ -9,6 +9,7 @@ services:
     dockerCommand: >
       sh -c "python manage.py migrate &&
              python manage.py seed_merchants || true &&
+             celery -A config worker -l info &
              gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2"
     envVars:
       - key: DJANGO_SETTINGS_MODULE
@@ -55,52 +56,6 @@ services:
       - key: CRON_SECRET
         generateValue: true
 
-  # ── Celery Worker ─────────────────────────────────────────────────────────
-  - type: worker
-    name: playto-celery-worker
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    plan: free
-    dockerCommand: celery -A config worker -l info
-    envVars:
-      - key: DJANGO_SETTINGS_MODULE
-        value: config.settings.production
-      - key: SECRET_KEY
-        fromService:
-          name: playto-api
-          type: web
-          envVarKey: SECRET_KEY
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: playto-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: playto-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: playto-db
-          property: password
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: playto-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: playto-db
-          property: port
-      - key: CELERY_BROKER_URL
-        fromService:
-          name: playto-redis
-          type: keyvalue
-          property: connectionString
-      - key: CELERY_RESULT_BACKEND
-        fromService:
-          name: playto-redis
-          type: keyvalue
-          property: connectionString
 
 
   # ── Vite Frontend (Static Site) ───────────────────────────────────────────
