@@ -1,0 +1,168 @@
+services:
+  - type: web
+    name: playto-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    startCommand: >
+      sh -c "python manage.py migrate &&
+             python manage.py seed_merchants || true &&
+             gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2"
+    plan: free
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: RENDER_EXTERNAL_HOSTNAME
+        fromService:
+          name: playto-api
+          type: web
+          property: host
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://playto-frontend.onrender.com
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: playto-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: playto-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: playto-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: playto-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: playto-db
+          property: port
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: playto-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: playto-redis
+          type: redis
+          property: connectionString
+
+  - type: worker
+    name: playto-celery-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    startCommand: celery -A config worker -l info
+    plan: free
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          name: playto-api
+          type: web
+          envVarKey: SECRET_KEY
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: playto-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: playto-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: playto-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: playto-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: playto-db
+          property: port
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: playto-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: playto-redis
+          type: redis
+          property: connectionString
+
+  # beat replaced by a Render cron job — free workers spin down and beat misses schedules
+  - type: cron
+    name: playto-scheduler
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    schedule: "*/5 * * * *"   # adjust to match your actual beat schedule
+    startCommand: python manage.py trigger_scheduled_tasks
+    plan: free
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: SECRET_KEY
+        fromService:
+          name: playto-api
+          type: web
+          envVarKey: SECRET_KEY
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: playto-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: playto-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: playto-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: playto-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: playto-db
+          property: port
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: playto-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: playto-redis
+          type: redis
+          property: connectionString
+
+  - type: web
+    name: playto-frontend
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: ./frontend/dist
+    plan: free
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://playto-api.onrender.com/api/v1
+
+databases:
+  - name: playto-db
+    databaseName: playto
+    user: playto
+    plan: free
+
+redis:
+  - name: playto-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
