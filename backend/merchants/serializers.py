@@ -126,10 +126,11 @@ class MerchantProfileSerializer(serializers.ModelSerializer):
 
     available_balance_paise = serializers.SerializerMethodField()
     held_balance_paise = serializers.SerializerMethodField()
+    has_seeded_data = serializers.SerializerMethodField()
 
     class Meta:
         model = Merchant
-        fields = ("id", "name", "email", "created_at", "available_balance_paise", "held_balance_paise")
+        fields = ("id", "name", "email", "created_at", "available_balance_paise", "held_balance_paise", "has_seeded_data")
 
     def get_available_balance_paise(self, obj):
         """
@@ -155,3 +156,9 @@ class MerchantProfileSerializer(serializers.ModelSerializer):
             Integer held balance in paise.
         """
         return get_held_balance(obj.id)
+
+    def get_has_seeded_data(self, obj):
+        """
+        Check if the merchant has seeded data (we use BankAccount as a heuristic).
+        """
+        return BankAccount.objects.filter(merchant=obj).exists()

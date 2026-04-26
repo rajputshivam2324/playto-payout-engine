@@ -67,7 +67,7 @@ export default function PayoutTable({ payouts }: PayoutTableProps) {
               <th className="px-4.5 py-3.5 border-b border-surface-400 text-left text-surface-900 text-xs font-extrabold uppercase">Bank Account</th>
               <th className="px-4.5 py-3.5 border-b border-surface-400 text-left text-surface-900 text-xs font-extrabold uppercase">Status</th>
               <th className="px-4.5 py-3.5 border-b border-surface-400 text-left text-surface-900 text-xs font-extrabold uppercase">Attempts</th>
-              <th className="px-4.5 py-3.5 border-b border-surface-400 text-left text-surface-900 text-xs font-extrabold uppercase">Failure</th>
+              <th className="px-4.5 py-3.5 border-b border-surface-400 text-left text-surface-900 text-xs font-extrabold uppercase">Remarks</th>
             </tr>
           </thead>
           <tbody>

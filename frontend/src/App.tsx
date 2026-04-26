@@ -3,7 +3,8 @@ import { useCallback, useState } from 'react'
 import { clearTokens, getStoredToken } from './api/client'
 import BalanceCard from './components/BalanceCard'
 import LedgerFeed from './components/LedgerFeed'
-import LoginPanel from './components/LoginPanel'
+import LandingPage from './components/LandingPage'
+import SeedSelection from './components/SeedSelection'
 import PayoutForm from './components/PayoutForm'
 import PayoutTable from './components/PayoutTable'
 import TopBar from './components/TopBar'
@@ -29,10 +30,15 @@ export default function App() {
   }, [])
 
   if (!isAuthenticated) {
-    return <LoginPanel onLogin={() => setIsAuthenticated(true)} />
+    return <LandingPage onLogin={() => setIsAuthenticated(true)} />
   }
 
   const merchant = balance.data
+  
+  if (merchant && merchant.has_seeded_data === false) {
+    return <SeedSelection onSeeded={refreshDashboard} />
+  }
+
   const bankAccounts = accounts.data ?? []
   const payoutRows = payouts.data ?? []
   const isRefreshing = balance.isLoading || accounts.isLoading || payouts.isLoading || ledger.isLoading

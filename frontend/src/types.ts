@@ -17,6 +17,8 @@ export interface MerchantProfile {
   available_balance_paise: number
   /** Funds currently held by pending/processing payouts, in paise. */
   held_balance_paise: number
+  /** Flag for UI to show seed selection screen */
+  has_seeded_data?: boolean
 }
 
 /** Bank account returned by GET /api/v1/bank-accounts/ — account number is always masked. */

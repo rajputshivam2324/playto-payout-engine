@@ -11,7 +11,7 @@ Key design decisions:
 from django.contrib import admin
 from django.urls import path
 from ledger.views import LedgerEntryListView
-from merchants.views import BankAccountDetailView, BankAccountListCreateView, MerchantMeView
+from merchants.views import BankAccountDetailView, BankAccountListCreateView, MerchantMeView, SignupView, MerchantSeedView
 from payouts.views import PayoutDetailView, PayoutListCreateView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -22,8 +22,12 @@ urlpatterns = [
     path("api/v1/auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     # Refresh exchanges a refresh token for a new access token without reusing passwords.
     path("api/v1/auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    # Signup endpoint creates a user and merchant.
+    path("api/v1/auth/signup/", SignupView.as_view(), name="auth_signup"),
     # Merchant profile exposes derived balances and identity for the dashboard.
     path("api/v1/merchants/me/", MerchantMeView.as_view(), name="merchant_me"),
+    # Seed endpoint populates the merchant account with mock data for testing.
+    path("api/v1/merchants/me/seed/", MerchantSeedView.as_view(), name="merchant_seed"),
     # Bank account list/create feeds the payout form destination dropdown.
     path("api/v1/bank-accounts/", BankAccountListCreateView.as_view(), name="bank_account_list_create"),
     # Bank account patch/delete is scoped by ownership inside the view.

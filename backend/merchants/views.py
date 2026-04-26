@@ -15,9 +15,12 @@ from rest_framework.views import APIView
 
 from config.api_errors import error_response
 from merchants.auth import merchant_for_user
-from merchants.models import BankAccount
+from merchants.models import BankAccount, Merchant
 from merchants.serializers import BankAccountSerializer, MerchantProfileSerializer
 from payouts.models import PayoutRequest
+from merchants.seed_utils import apply_seed_persona
+from django.contrib.auth import get_user_model
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 def require_idempotency_key(request):
@@ -50,6 +53,51 @@ class MerchantMeView(APIView):
         merchant = merchant_for_user(request.user)
         serializer = MerchantProfileSerializer(merchant)
         return Response(serializer.data)
+
+
+class SignupView(APIView):
+    """Register a new user and return JWT tokens."""
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        username = request.data.get("username")
+        password = request.data.get("password")
+
+        if not username or not password:
+            return error_response("missing_fields", "Username and password are required.", None, status.HTTP_400_BAD_REQUEST)
+
+        User = get_user_model()
+        if User.objects.filter(username=username).exists():
+            return error_response("username_taken", "Username is already taken.", "username", status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            email = f"{username}@playto.local"
+            user = User.objects.create_user(username=username, password=password, email=email)
+            merchant = Merchant.objects.create(name=username.capitalize(), email=email)
+
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+        }, status=status.HTTP_201_CREATED)
+
+
+class MerchantSeedView(APIView):
+    """Seed persona data for the authenticated merchant."""
+
+    def post(self, request):
+        merchant = merchant_for_user(request.user)
+        persona_id = request.data.get("persona_id")
+        if not persona_id:
+            return error_response("missing_persona", "persona_id is required.", "persona_id", status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                apply_seed_persona(merchant, persona_id)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ValueError as e:
+            return error_response("invalid_persona", str(e), "persona_id", status.HTTP_400_BAD_REQUEST)
 
 
 class BankAccountListCreateView(APIView):

@@ -159,6 +159,16 @@ export async function login(username: string, password: string): Promise<TokenPa
   return response.data
 }
 
+export async function signup(username: string, password: string): Promise<TokenPair> {
+  const response = await api.post<TokenPair>('/auth/signup/', { username, password })
+  storeTokens(response.data)
+  return response.data
+}
+
+export async function seedAccount(personaId: number): Promise<void> {
+  await api.post('/merchants/me/seed/', { persona_id: personaId })
+}
+
 export async function fetchMerchantProfile(): Promise<MerchantProfile> {
   const response = await api.get<MerchantProfile>('/merchants/me/')
   return response.data
