@@ -1,14 +1,15 @@
 services:
+  # ── Django API ────────────────────────────────────────────────────────────
   - type: web
     name: playto-api
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
+    plan: free
     startCommand: >
       sh -c "python manage.py migrate &&
              python manage.py seed_merchants || true &&
              gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2"
-    plan: free
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
@@ -44,21 +45,22 @@ services:
       - key: CELERY_BROKER_URL
         fromService:
           name: playto-redis
-          type: redis
+          type: keyvalue
           property: connectionString
       - key: CELERY_RESULT_BACKEND
         fromService:
           name: playto-redis
-          type: redis
+          type: keyvalue
           property: connectionString
 
+  # ── Celery Worker ─────────────────────────────────────────────────────────
   - type: worker
     name: playto-celery-worker
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    startCommand: celery -A config worker -l info
     plan: free
+    startCommand: celery -A config worker -l info
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
@@ -90,23 +92,25 @@ services:
       - key: CELERY_BROKER_URL
         fromService:
           name: playto-redis
-          type: redis
+          type: keyvalue
           property: connectionString
       - key: CELERY_RESULT_BACKEND
         fromService:
           name: playto-redis
-          type: redis
+          type: keyvalue
           property: connectionString
 
-  # beat replaced by a Render cron job — free workers spin down and beat misses schedules
+  # ── Celery Beat (cron) ────────────────────────────────────────────────────
+  # Beat replaced by a Render cron job — free workers spin down after 15 min
+  # of inactivity and beat cannot reliably fire schedules.
   - type: cron
     name: playto-scheduler
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    schedule: "*/5 * * * *"   # adjust to match your actual beat schedule
-    startCommand: python manage.py trigger_scheduled_tasks
     plan: free
+    schedule: "*/5 * * * *"
+    startCommand: python manage.py trigger_scheduled_tasks
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
@@ -138,14 +142,15 @@ services:
       - key: CELERY_BROKER_URL
         fromService:
           name: playto-redis
-          type: redis
+          type: keyvalue
           property: connectionString
       - key: CELERY_RESULT_BACKEND
         fromService:
           name: playto-redis
-          type: redis
+          type: keyvalue
           property: connectionString
 
+  # ── Vite Frontend (Static Site) ───────────────────────────────────────────
   - type: web
     name: playto-frontend
     runtime: static
@@ -156,13 +161,17 @@ services:
       - key: VITE_API_BASE_URL
         value: https://playto-api.onrender.com/api/v1
 
+  # ── Redis (Key Value) ────────────────────────────────────────────────────
+  - type: keyvalue
+    name: playto-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: allow all
+
 databases:
   - name: playto-db
     databaseName: playto
     user: playto
     plan: free
-
-redis:
-  - name: playto-redis
-    plan: free
-    maxmemoryPolicy: allkeys-lru
