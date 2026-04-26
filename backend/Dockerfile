@@ -12,7 +12,7 @@ RUN pip install -r requirements.txt gunicorn
 
 COPY . /app/
 
-ENV DJANGO_SETTINGS_MODULE=config.settings.local
+ENV DJANGO_SETTINGS_MODULE=config.settings.production
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
