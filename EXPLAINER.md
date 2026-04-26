@@ -1,197 +1,308 @@
-# Playto Payout Engine — Technical Explainer
+# Playto Payout Engine — Explainer
+
+> **Live:** Frontend → [playto-frontend-m4j7.onrender.com](https://playto-frontend-m4j7.onrender.com/) | Backend → [playto-api-550a.onrender.com](https://playto-api-550a.onrender.com)
 
 ---
 
-## Section 1 — The Ledger
+## What This Is
 
-### The Balance Calculation Query
+A production-grade payout engine for Indian merchants. Money flows one direction: customers pay → Playto collects → merchant requests an INR payout to their bank account. The system simulates the bank settlement step (70% success, 20% fail, 10% hang) to exercise the full lifecycle — concurrency, retries, refunds, idempotency — without a real banking integration.
+
+---
+
+## Architecture Diagram
+
+![Playto Payout Engine Architecture](./architecture.png)
+
+---
+
+## Tech Stack
+
+| Layer | Tech |
+|---|---|
+| Frontend | React 19 + Tailwind CSS v4 + Vite + TypeScript |
+| Backend | Django 5.2 + Django REST Framework |
+| Database | PostgreSQL 16 (row-level locking via `SELECT FOR UPDATE`) |
+| Task Queue | Celery 5.6 + Redis 7 (broker + result backend) |
+| Auth | JWT via `djangorestframework-simplejwt` (15 min access / 24 hr refresh) |
+| Deployment | Render (free tier) — API + Celery worker in one container, static frontend, managed Postgres + Redis |
+
+---
+
+## Project Structure
+
+```
+playto-payout-engine/
+├── backend/
+│   ├── config/          # Django project config (settings, urls, celery, error handler)
+│   │   ├── settings/
+│   │   │   ├── base.py        # Shared: DRF, JWT, CORS, Celery beat schedules
+│   │   │   ├── local.py       # Dev: PostgreSQL + Redis on localhost
+│   │   │   └── production.py  # Render: env vars, SSL, WhiteNoise
+│   │   ├── urls.py            # All API routes (versioned under /api/v1/)
+│   │   ├── celery.py          # Celery app factory
+│   │   └── api_errors.py      # Stripe-style {error: {code, message, param}} envelope
+│   ├── merchants/       # Merchant model, bank accounts, auth, signup, seed data
+│   ├── ledger/          # Append-only LedgerEntry model + balance aggregation
+│   ├── payouts/         # PayoutRequest model (state machine) + create/list/detail views
+│   ├── idempotency/     # IdempotencyKey model for replay protection
+│   ├── workers/         # Celery tasks: process_payout, retry_stuck_payouts, purge keys
+│   ├── Dockerfile       # Python 3.12-slim + psycopg2
+│   ├── start.sh         # Entrypoint: migrate → seed → celery worker (bg) → gunicorn
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── api/client.ts       # Axios + JWT interceptor + silent refresh + idempotency key gen
+│   │   ├── components/         # LandingPage, BalanceCard, PayoutForm, PayoutTable, LedgerFeed, etc.
+│   │   ├── hooks/              # usePollingResource (generic), useBalance, usePayouts, useLedger
+│   │   ├── types.ts            # TypeScript interfaces mirroring API JSON shapes
+│   │   └── formatters.ts       # Paise → Rupees (integer arithmetic only)
+│   ├── Dockerfile
+│   └── vite.config.ts
+├── docker-compose.yml   # Full local stack: postgres, redis, api, worker, beat, frontend
+├── render.yaml          # Render IaC: web service, static site, managed DB + Redis
+└── .env.example         # Template for local env vars
+```
+
+---
+
+## Core Design Principles
+
+These are not abstract. Every one maps to concrete code.
+
+### 1. Ledger Is the Source of Truth (No Balance Column)
+
+`Merchant` has **no** `balance` field. Balance is always:
 
 ```python
-from django.db.models import Sum, Q
-
-def get_merchant_balance(merchant_id):
-    result = LedgerEntry.objects.filter(merchant_id=merchant_id).aggregate(
-        credits=Sum('amount_paise', filter=Q(entry_type='CREDIT')),
-        debits=Sum('amount_paise', filter=Q(entry_type='DEBIT')),
-    )
-    return (result['credits'] or 0) - (result['debits'] or 0)
+SUM(CREDIT entries) - SUM(DEBIT entries)
 ```
 
-### Why Credits and Debits Are Separate Rows
+`LedgerEntry` is append-only. The model overrides `save()` to reject updates and `delete()` to always raise. You cannot edit history. Balance at any timestamp = replay rows up to that time.
 
-Every money movement is represented as its own immutable row. A collection from a customer is a `CREDIT` row. A payout hold is a `DEBIT` row. A failed payout refund is a new `CREDIT` row. No row is ever updated or deleted — the `LedgerEntry.save()` override raises `ImmutableLedgerEntryError` on update, and `delete()` always raises.
+**File:** `ledger/models.py` → `get_merchant_balance()`, `LedgerEntry.save()`, `LedgerEntry.delete()`
 
-Balance is derived at query time: `SUM(credits) - SUM(debits)`. This means:
+### 2. SELECT FOR UPDATE Prevents Double-Spend
 
-1. **Full audit trail** — You can reconstruct the merchant's balance at any point in history by replaying rows up to a timestamp.
-2. **Structurally impossible to violate** — There is no mutable balance column that can drift out of sync with reality.
-3. **Concurrent safety** — Two transactions inserting new rows cannot corrupt each other's view of the balance as long as the balance check runs inside a locked transaction (see Section 2).
+When a payout is created, the merchant row is locked with `SELECT FOR UPDATE` inside `transaction.atomic()`. The second concurrent request **blocks** at the DB level until the first commits. It then reads the updated (lower) balance and gets `insufficient_funds`.
 
-### What Breaks If You Store Balance as a Column
+SQLite silently ignores `select_for_update()` — that's why PostgreSQL is mandatory even for local dev.
 
-If balance were a mutable column (`merchant.balance = merchant.balance - amount`), then:
+**File:** `payouts/views.py` → `_create_payout_response()` lines 242-292
 
-- Two concurrent requests could both read `balance = 10000`, both compute `10000 - 6000 = 4000`, and both write `balance = 4000`. The merchant loses ₹60 but only got charged ₹60 once — the other ₹60 disappeared into the void.
-- Balance could go negative if a bug writes a wrong number and there is no compensating ledger row to catch it during audit.
-- Historical balance reconstruction requires storing snapshots or change logs, duplicating the work that the ledger already does.
+### 3. Model-Layer State Machine
 
----
+Payout states and transitions:
 
-## Section 2 — The Lock
-
-### The SELECT FOR UPDATE Code Block
-
-```python
-with transaction.atomic():
-    # SELECT FOR UPDATE: acquires a PostgreSQL row-level lock on this merchant row.
-    # No other transaction can read-for-update or modify this row until we commit or rollback.
-    # This is the primitive that prevents two concurrent 60-rupee payouts from both
-    # passing the balance check when the merchant only has 100 rupees. (P5)
-    locked_merchant = Merchant.objects.select_for_update().get(pk=merchant.pk)
-
-    # Compute available balance via DB aggregate — runs inside the locked transaction
-    ledger_balance = get_merchant_balance(locked_merchant.id)
-
-    if amount_paise > ledger_balance:
-        # Rollback: return error, merchant row lock is released
-        return error_response("insufficient_funds", ...)
-
-    # Create PayoutRequest + DEBIT LedgerEntry inside the same transaction
-    payout = PayoutRequest.objects.create(...)
-    LedgerEntry.objects.create(entry_type='DEBIT', ...)
-    # Commit: both writes are durable, lock is released
+```
+pending → processing → completed
+                     → failed (+ atomic refund CREDIT)
 ```
 
-### PostgreSQL Primitive
-
-This relies on **PostgreSQL row-level locks** (`FOR UPDATE` clause in SQL). When `select_for_update()` runs, PostgreSQL places an exclusive lock on the merchant row. Any other transaction that tries to `SELECT FOR UPDATE` on the same row will **block** until the first transaction commits or rolls back.
-
-### What Happens to the Second Concurrent Request
-
-1. Thread A acquires the lock on merchant row, reads balance = ₹100, begins creating a ₹60 payout.
-2. Thread B tries to `SELECT FOR UPDATE` on the same merchant row — it **blocks** at the database level.
-3. Thread A writes the DEBIT entry (₹60 hold) and commits. The balance is now ₹40. Lock is released.
-4. Thread B's `SELECT FOR UPDATE` unblocks. It reads balance = ₹40. It tries to create a ₹60 payout — but ₹40 < ₹60, so it returns `insufficient_funds`.
-
-This is why SQLite cannot be used for development — SQLite silently ignores `select_for_update()`, making the lock a no-op and allowing both threads to succeed (double-spend).
-
----
-
-## Section 3 — Idempotency
-
-### How the System Recognizes a Previously Seen Key
-
-The `IdempotencyKey` model has a `UniqueConstraint` on `(merchant, key)`. When a payout creation request arrives:
-
-1. The view queries `IdempotencyKey.objects.filter(merchant=merchant, key=key_value).first()`.
-2. If found and `status=done` and not expired → return the stored `response_body` verbatim (Case B).
-3. If found and `status=in_flight` → return 409 `request_in_progress` (Case C).
-4. If found but `expires_at < now` → delete the old key, treat as new (Case D).
-5. If not found → create with `status=in_flight`, proceed to create the payout (Case A).
-
-### What Happens When the First Request Is Still In-Flight
-
-If the first request's `IdempotencyKey` has `status=in_flight` (meaning the payout creation is still processing), the second request sees Case C and returns:
-
-```json
-{
-  "error": {
-    "code": "request_in_progress",
-    "message": "A request with this key is already being processed.",
-    "param": "Idempotency-Key"
-  }
-}
-```
-
-This tells the client to wait and retry. It is expected behavior, not a bug. The unique constraint also handles the race where two requests try to create the key simultaneously — the loser gets an `IntegrityError` and returns the same 409.
-
-### What `response_body` Contains and Why It Is Stored Verbatim
-
-`response_body` is a `JSONField` containing the exact serialized payout response that the API returned on the first successful creation — including the payout `id`, `amount_paise`, `state`, `created_at`, and `updated_at`.
-
-It is stored verbatim so that replays are **byte-perfect**: the second request with the same key returns the exact same payout ID, the exact same timestamp, the exact same status code. The client cannot tell whether it is receiving a fresh response or a replay. This matches Stripe's behavior.
-
-Additionally, `request_params` stores a fingerprint of the original request body (`amount_paise` and `bank_account_id`). If a client reuses the same key with different parameters, the system rejects with `idempotency_key_conflict` (409) — preventing accidental reuse.
-
----
-
-## Section 4 — The State Machine
-
-### The `transition_to()` Method
-
-```python
-def transition_to(self, new_state, reason=None):
-    with transaction.atomic():
-        locked = type(self).objects.select_for_update().get(pk=self.pk)
-        allowed_states = self.LEGAL_TRANSITIONS[locked.state]
-        if new_state not in allowed_states:
-            raise InvalidStateTransition(
-                f"Cannot transition payout {locked.id} from {locked.state} to {new_state}."
-            )
-        locked.state = new_state
-        locked.updated_at = timezone.now()
-        if reason:
-            locked.failure_reason = reason
-        locked.save(update_fields=["state", "updated_at", "failure_reason"])
-
-        if previous_state == self.PROCESSING and new_state == self.FAILED:
-            LedgerEntry.objects.create(
-                merchant=locked.merchant,
-                entry_type=LedgerEntry.CREDIT,
-                amount_paise=locked.amount_paise,
-                reference_id=str(locked.id),
-                description=f"Payout refund after failure - {reason or 'unspecified failure'}",
-            )
-        return locked
-```
-
-### The `VALID_TRANSITIONS` Dict
+`transition_to()` on `PayoutRequest` does everything: acquires row lock, validates allowed transitions, writes state + ledger refund in one atomic transaction. Illegal transitions raise `InvalidStateTransition`. There is no other way to change payout state.
 
 ```python
 LEGAL_TRANSITIONS = {
-    PENDING: {PROCESSING},
+    PENDING:    {PROCESSING},
     PROCESSING: {COMPLETED, FAILED},
-    COMPLETED: set(),     # Terminal — no outgoing transitions
-    FAILED: set(),        # Terminal — no outgoing transitions
+    COMPLETED:  set(),   # terminal
+    FAILED:     set(),   # terminal
 }
 ```
 
-### Where `failed → completed` Is Blocked
+**File:** `payouts/models.py` → `transition_to()`
 
-It is blocked by **absence**: `FAILED` maps to `set()` — an empty set of allowed next states. The code does not check `if new_state == 'completed' and current_state == 'failed': reject`. Instead, a `failed → completed` transition simply fails the `new_state not in allowed_states` check because `'completed' not in set()` is `True`. This means adding a new illegal transition requires no code change — it is illegal by default because it is not in the allow list.
+### 4. Idempotency (Stripe-Style)
 
-### Why the State Machine Lives in the Model Layer
+Every mutation endpoint requires an `Idempotency-Key` header. The system:
 
-If the state machine were in the view or the Celery task, there would be multiple code paths that could change payout state. A new developer adding a management command or admin action could bypass the state machine by writing `payout.state = 'completed'` directly.
+| Case | Condition | Response |
+|---|---|---|
+| A | New key | Create `in_flight` row → process → store response → `done` |
+| B | Same key, same params, `done` | Replay stored response byte-for-byte |
+| C | Same key, `in_flight` | 409 `request_in_progress` |
+| D | Same key, expired (>24h) | Delete old row, treat as new |
+| Conflict | Same key, different params | 409 `idempotency_key_conflict` |
 
-By encoding transitions in `PayoutRequest.transition_to()`, the model is the **single source of truth** for what transitions are legal. The method also handles locking and atomic refund creation. No code path — view, task, management command, or admin — can bypass it unless they directly write SQL.
+Unique constraint on `(merchant, key)` handles races at the DB level.
+
+**File:** `payouts/views.py` → `_prepare_idempotency_key()`, `idempotency/models.py`
+
+### 5. Atomic Failure Refunds
+
+When a payout fails (bank rejection or retry exhaustion), the `transition_to()` method creates a CREDIT ledger entry **in the same transaction** as the state change to `failed`. If either write fails, both roll back. Funds cannot get stranded.
+
+**File:** `payouts/models.py` lines 100-109
+
+### 6. Celery Workers Are Suspects
+
+Workers assume duplicate delivery. Every task:
+1. Acquires `SELECT FOR UPDATE` on the payout row
+2. Re-checks current state
+3. Exits cleanly if already terminal
+
+The `process_payout` task simulates bank settlement:
+- `random() < 0.70` → complete
+- `0.70 – 0.90` → fail + refund
+- `≥ 0.90` → sleep 60s (simulates bank hang)
+
+**File:** `workers/tasks.py` → `process_payout()`, `_complete_payout()`, `_fail_payout_with_refund()`
+
+### 7. Stuck Payout Detection
+
+`retry_stuck_payouts` runs periodically (every 30s via Celery beat / external cron). It finds processing payouts where `updated_at` is older than 30 seconds (worker heartbeat). For each:
+
+- If `attempt_count < 3`: increment count, refresh heartbeat, re-enqueue with exponential backoff (`2^attempt`)
+- If `attempt_count >= 3`: fail + refund atomically
+
+**File:** `workers/tasks.py` → `retry_stuck_payouts()`
+
+### 8. Money Is Integers (Paise)
+
+All amounts are stored as `PositiveBigIntegerField` in paise (1 INR = 100 paise). No floats, no decimals, no `Decimal`. Display conversion uses integer arithmetic only:
+
+```python
+# Backend
+whole = amount_paise // 100
+fractional = abs(amount_paise) % 100
+```
+
+```typescript
+// Frontend
+const whole = Math.trunc(paise / 100)
+const fractional = Math.abs(paise % 100)
+```
 
 ---
 
-## Section 5 — The AI Audit
+## API Endpoints
 
-### Bug: AI Used Float Division for Paise-to-Rupees Conversion
+All under `/api/v1/`. Auth via `Authorization: Bearer <jwt>`.
 
-**Wrong code (AI-generated):**
+| Method | Path | What It Does |
+|---|---|---|
+| POST | `/auth/token/` | Login → JWT pair |
+| POST | `/auth/token/refresh/` | Refresh → new access token |
+| POST | `/auth/signup/` | Register user + merchant |
+| GET | `/merchants/me/` | Profile + available/held balances |
+| POST | `/merchants/me/seed/` | Seed demo data (persona 1-5) |
+| GET | `/bank-accounts/` | List merchant's bank accounts |
+| POST | `/bank-accounts/` | Add bank account (needs Idempotency-Key) |
+| PATCH | `/bank-accounts/:id/` | Update holder name or default flag |
+| DELETE | `/bank-accounts/:id/` | Soft-delete (rejected if payout active) |
+| GET | `/payouts/` | List merchant's payouts |
+| POST | `/payouts/` | Create payout (needs Idempotency-Key) |
+| GET | `/payouts/:id/` | Single payout detail |
+| GET | `/ledger/` | Paginated ledger feed |
+| GET | `/ops/cron/?token=<secret>` | Trigger periodic tasks (external cron) |
 
-```python
-def rupees_from_paise(amount_paise):
-    return f"₹{amount_paise / 100:.2f}"
+Every error response follows the same shape:
+```json
+{"error": {"code": "insufficient_funds", "message": "...", "param": "amount_paise"}}
 ```
 
-**What the bug was:**
+---
 
-Float division can introduce IEEE 754 rounding artifacts. For example, `100007 / 100` evaluates to `1000.0699999999999` in Python, which would format as `₹1000.07` instead of `₹1,000.07`. More critically, using `/ 100` in a financial context establishes a pattern where money values are routinely converted to floats, inviting downstream comparisons like `amount >= 0.01` that are undefined in floating-point arithmetic.
+## Frontend Flow
 
-**Corrected code:**
+1. **Landing Page** — Sign in or create account. Default creds: `rahul` / `playto12345`.
+2. **Seed Selection** — First-time users pick a persona (Boutique E-commerce, Freelancer, SaaS, etc.) which seeds bank accounts + ledger credits + sample payouts.
+3. **Dashboard** — Balance cards (available + held), payout form, payout history table, ledger feed.
+4. **Live Polling** — `usePollingResource` hook polls balance (5s), payouts (3s), ledger (5s) so payout state changes appear without manual refresh.
+5. **Silent Token Refresh** — Axios interceptor swaps expired access tokens using the refresh token. Queues concurrent 401s so only one refresh request fires.
 
-```python
-def rupees_from_paise(amount_paise):
-    # Integer arithmetic only — float division can introduce IEEE 754 rounding artifacts
-    # on certain paise values, which violates the money-as-integers invariant. (P9)
-    whole = amount_paise // 100
-    fractional = abs(amount_paise) % 100
-    return f"₹{whole:,}.{fractional:02d}"
+---
+
+## Payout Lifecycle (end to end)
+
+```
+1. User submits payout form
+2. Frontend sends POST /payouts/ with Idempotency-Key header
+3. Backend: validate → check idempotency → lock merchant row → check balance → create PayoutRequest (pending) + DEBIT ledger entry → commit → enqueue Celery task
+4. Celery worker picks up task → lock payout → pending→processing → simulate bank
+5a. 70%: processing→completed (payout done, DEBIT stays)
+5b. 20%: processing→failed (refund CREDIT created atomically)
+5c. 10%: worker hangs → retry_stuck_payouts detects stale heartbeat → re-enqueue or fail after 3 retries
+6. Frontend polls /payouts/ and /merchants/me/ → UI updates in real time
 ```
 
-The corrected version uses floor division (`//`) and modulo (`%`) — both integer operations — so no floating-point value is ever created. The same pattern is applied in the frontend `formatRupees()` function, which uses `Math.trunc()` and `%` instead of `/ 100`.
+---
+
+## Deployment (Render)
+
+Defined in `render.yaml`:
+
+- **playto-api** — Docker web service. `start.sh` runs migrations, seeds, starts Celery worker in background, then Gunicorn. Single container = free tier compatible (no separate worker service).
+- **playto-frontend** — Static site. `npm ci && npm run build` → serves `dist/`.
+- **playto-db** — Managed PostgreSQL (free tier).
+- **playto-redis** — Managed Redis key-value store (free tier).
+- **Periodic tasks** — No Celery beat. An external cron service (cron-job.org) hits `GET /ops/cron/?token=<CRON_SECRET>` to trigger `retry_stuck_payouts` and `purge_expired_idempotency_keys`.
+
+---
+
+## Local Dev Setup
+
+```bash
+# 1. Start infra
+docker compose up -d db redis
+
+# 2. Backend
+cd backend
+python -m venv ../.venv && source ../.venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py seed_merchants
+python manage.py runserver
+
+# 3. Workers (separate terminals)
+celery -A config worker -l info
+celery -A config beat -l info
+
+# 4. Frontend
+cd frontend && npm install && npm run dev
+```
+
+Dashboard at `http://localhost:5173`. Login: `rahul` / `playto12345`.
+
+---
+
+## Tests
+
+```bash
+cd backend
+python manage.py test                # all tests
+python manage.py test payouts.tests  # idempotency, state machine, balance, concurrency
+python manage.py test workers.tests  # stuck payout retry, cleanup, worker idempotency
+```
+
+Key tests:
+- **Concurrent overdraw** — Two threads race to create payouts exceeding balance. `SELECT FOR UPDATE` ensures exactly one succeeds, one gets `insufficient_funds`.
+- **Idempotency replay** — Same key + same params = same response. Same key + different params = 409 conflict.
+- **Balance invariant** — After create, process, complete, and fail+refund stages, API balance always equals `SUM(CREDIT) - SUM(DEBIT)`.
+- **Retry exhaustion** — Stuck payout at `attempt_count >= 3` fails atomically with refund.
+- **Worker idempotency** — Calling `process_payout` on a terminal payout is a no-op (no state change, no ledger mutation).
+
+Tests use `TransactionTestCase` for concurrency because Django's `TestCase` wraps everything in a transaction, making `SELECT FOR UPDATE` untestable.
+
+---
+
+## The AI Bug That Was Fixed
+
+The AI generated float division for paise-to-rupees:
+
+```python
+# WRONG: float division → IEEE 754 rounding artifacts
+return f"₹{amount_paise / 100:.2f}"
+# 100007 / 100 = 1000.0699999999999 → "₹1000.07" (wrong)
+```
+
+Fixed to integer arithmetic:
+
+```python
+# CORRECT: no floats involved
+whole = amount_paise // 100
+fractional = abs(amount_paise) % 100
+return f"₹{whole:,}.{fractional:02d}"
+```
+
+Same fix applied in frontend `formatRupees()` using `Math.trunc()` and `%`.
