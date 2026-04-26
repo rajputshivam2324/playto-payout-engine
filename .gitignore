@@ -1,0 +1,166 @@
+###############################################################################
+# Playto Payout Engine — .gitignore
+# Rule: DENY by default for secrets. Whitelist only safe templates.
+###############################################################################
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. SECRETS & CREDENTIALS  (highest priority — never leak these)
+# ═══════════════════════════════════════════════════════════════════════════════
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.secret
+*.secrets
+*credentials*
+**/secrets/
+**/private/
+**/.secrets/
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. PYTHON / DJANGO  (backend)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+sdist/
+wheels/
+*.whl
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Django
+backend/db.sqlite3
+backend/db.sqlite3-journal
+*.sqlite3
+*.sqlite3-journal
+backend/staticfiles/
+backend/static_collected/
+backend/media/
+*.log
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+celerybeat-schedule.db
+
+# Coverage / testing
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+
+# mypy / type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. NODE / VITE / TYPESCRIPT  (frontend)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+node_modules/
+frontend/dist/
+frontend/node_modules/
+*.tsbuildinfo
+.eslintcache
+
+# Vite
+*.local
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. DOCKER
+# ═══════════════════════════════════════════════════════════════════════════════
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. OS / EDITOR JUNK
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+*.swp
+*.swo
+
+# IDEs / Editors
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+*.iml
+.project
+.classpath
+.settings/
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. MISC SAFETY NET
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Terraform / IaC state (if infra is ever added)
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Archives (should never be committed)
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# Dump files
+*.dump
+*.sql.gz
+*.sql.bz2
+*.bak
+
+# Debug / profiling
+*.prof
+*.lprof

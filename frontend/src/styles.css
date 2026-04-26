@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+/*
+ * styles.css
+ *
+ * Tailwind CSS v4 entry point for the Playto payout dashboard.
+ *
+ * All layout, spacing, color, and typography is expressed via Tailwind utility
+ * classes in JSX. This file provides only:
+ *   - @theme tokens for the Playto brand palette
+ *   - @keyframes for micro-animations (spin, pulse, shimmer)
+ *   - Minimal base resets that Tailwind's preflight does not cover
+ */
+
+/* ── Brand Theme Tokens ──────────────────────────────────────────────────── */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* Primary green palette */
+  --color-brand-50: #edf7f0;
+  --color-brand-100: #c9d8ce;
+  --color-brand-200: #bdd5c5;
+  --color-brand-300: #8fb39e;
+  --color-brand-400: #19875e;
+  --color-brand-500: #0d5f44;
+  --color-brand-600: #0a4935;
+  --color-brand-700: #0d4c3a;
+  --color-brand-800: #0f3024;
+  --color-brand-900: #17211b;
+
+  /* Neutral green-gray palette */
+  --color-surface-50: #f8faf7;
+  --color-surface-100: #f5f7f4;
+  --color-surface-200: #f2f6f3;
+  --color-surface-300: #e8ede9;
+  --color-surface-400: #e4eae5;
+  --color-surface-500: #d7dfd9;
+  --color-surface-600: #d6decf;
+  --color-surface-700: #cdd8d0;
+  --color-surface-800: #c9d8ce;
+  --color-surface-900: #617066;
+
+  /* Status palette */
+  --color-success-bg: #edf7f0;
+  --color-success-fg: #0d5f44;
+  --color-danger-bg: #fff4f2;
+  --color-danger-fg: #8b1e16;
+  --color-danger-border: #efb8b0;
+  --color-warning-bg: #fff5d8;
+  --color-warning-fg: #81570b;
+  --color-info-bg: #e8f5fc;
+  --color-info-fg: #155f87;
+
+  /* Held pill */
+  --color-held-bg: #edf7f0;
+  --color-held-fg: #0d4c3a;
+  --color-held-border: #bdd5c5;
+}
+
+/* ── Base Resets ────────────────────────────────────────────────────────── */
+:root {
+  color: var(--color-brand-900);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(206, 226, 216, 0.55), rgba(245, 247, 244, 0.9) 280px),
+    var(--color-surface-100);
+}
+
+/* ── Keyframe Animations ───────────────────────────────────────────────── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.45; transform: scale(0.96); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Utility Animations ────────────────────────────────────────────────── */
+@utility animate-spin-slow {
+  animation: spin 0.9s linear infinite;
+}
+
+@utility animate-pulse-dot {
+  animation: pulse-dot 1.3s ease-in-out infinite;
+}
+
+@utility animate-shimmer {
+  background: linear-gradient(90deg, var(--color-surface-300) 25%, var(--color-surface-200) 50%, var(--color-surface-300) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  color: transparent !important;
+}
