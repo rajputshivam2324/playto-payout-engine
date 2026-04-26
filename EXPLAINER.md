@@ -29,6 +29,25 @@ A production-grade payout engine for Indian merchants. Money flows one direction
 
 ---
 
+## Stripe Engineering Principles (P1–P10)
+
+Every line of code follows these. They're not aspirational — they're enforced at the DB, model, and task layer.
+
+| # | Principle | Where It's Enforced |
+|---|---|---|
+| **P1** | **Correctness over speed** — Every money operation runs inside a DB transaction. No half-states. | `payouts/views.py` → `transaction.atomic()` wraps payout + DEBIT creation. `payouts/models.py` → `transition_to()` wraps state + refund. |
+| **P2** | **Idempotency is first-class** — Every mutation needs an `Idempotency-Key`. Full response stored for byte-perfect replay. | `payouts/views.py` → `_prepare_idempotency_key()` handles all 4 cases (new, replay, in-flight, expired). `idempotency/models.py` → `UniqueConstraint(merchant, key)`. |
+| **P3** | **Immutable ledger as source of truth** — Balance = `SUM(CREDIT) - SUM(DEBIT)`. No balance column. No updates. No deletes. | `ledger/models.py` → `save()` rejects updates, `delete()` always raises. `get_merchant_balance()` uses DB aggregate. |
+| **P4** | **Explicit state machines; illegal transitions are hard errors** — `LEGAL_TRANSITIONS` dict is an allow-list. Anything not listed raises `InvalidStateTransition`. | `payouts/models.py` → `transition_to()`. Tested in `payouts/tests.py` → `PayoutStateMachineTests`. |
+| **P5** | **Lock before you read** — `SELECT FOR UPDATE` on the merchant row before computing balance. Holds lock until commit. | `payouts/views.py` line 246 → `Merchant.objects.select_for_update().get(pk=merchant.pk)`. Tested with real threads in `PayoutConcurrencyTests`. |
+| **P6** | **APIs are stable contracts** — Every error is `{"error": {"code": "...", "message": "...", "param": "..."}}`. No naked 500s. | `config/api_errors.py` → `error_body()`, `error_response()`, `playto_exception_handler()`. |
+| **P7** | **Observability is built in** — `updated_at` is the worker heartbeat. Every state transition records a timestamp and reason. | `payouts/models.py` → `updated_at = timezone.now()` in `transition_to()`. `workers/tasks.py` → stuck detection uses `updated_at__lt=cutoff`. |
+| **P8** | **Background workers are suspects** — Every task locks the row and re-checks state before acting. Duplicate delivery = no-op. | `workers/tasks.py` → `select_for_update().get()` + state check at task entry. Tested in `WorkerIdempotencyTests`. |
+| **P9** | **Money amounts are integers** — All amounts in paise as `PositiveBigIntegerField`. Display uses `//` and `%`, never float division. | `payouts/models.py` → `amount_paise` field. `payouts/views.py` → `rupees_from_paise()`. `frontend/src/formatters.ts` → `Math.trunc()`. |
+| **P10** | **Fail loudly, recover atomically** — On failure, CREDIT refund is created in the same transaction as the `failed` state change. Both commit or both rollback. | `payouts/models.py` → `transition_to()` lines 100-109. |
+
+---
+
 ## Project Structure
 
 ```
@@ -66,11 +85,11 @@ playto-payout-engine/
 
 ---
 
-## Core Design Principles
+## How Each Principle Is Implemented
 
-These are not abstract. Every one maps to concrete code.
+Detailed walk-through of each core system. Every subsection maps back to the Stripe principles (P1–P10) listed above.
 
-### 1. Ledger Is the Source of Truth (No Balance Column)
+### 1. Ledger Is the Source of Truth — No Balance Column (P3, P9)
 
 `Merchant` has **no** `balance` field. Balance is always:
 
@@ -82,7 +101,7 @@ SUM(CREDIT entries) - SUM(DEBIT entries)
 
 **File:** `ledger/models.py` → `get_merchant_balance()`, `LedgerEntry.save()`, `LedgerEntry.delete()`
 
-### 2. SELECT FOR UPDATE Prevents Double-Spend
+### 2. SELECT FOR UPDATE Prevents Double-Spend (P1, P5)
 
 When a payout is created, the merchant row is locked with `SELECT FOR UPDATE` inside `transaction.atomic()`. The second concurrent request **blocks** at the DB level until the first commits. It then reads the updated (lower) balance and gets `insufficient_funds`.
 
@@ -90,7 +109,7 @@ SQLite silently ignores `select_for_update()` — that's why PostgreSQL is manda
 
 **File:** `payouts/views.py` → `_create_payout_response()` lines 242-292
 
-### 3. Model-Layer State Machine
+### 3. Model-Layer State Machine (P4, P10)
 
 Payout states and transitions:
 
@@ -112,7 +131,7 @@ LEGAL_TRANSITIONS = {
 
 **File:** `payouts/models.py` → `transition_to()`
 
-### 4. Idempotency (Stripe-Style)
+### 4. Idempotency — Stripe-Style (P2)
 
 Every mutation endpoint requires an `Idempotency-Key` header. The system:
 
@@ -128,13 +147,13 @@ Unique constraint on `(merchant, key)` handles races at the DB level.
 
 **File:** `payouts/views.py` → `_prepare_idempotency_key()`, `idempotency/models.py`
 
-### 5. Atomic Failure Refunds
+### 5. Atomic Failure Refunds (P1, P10)
 
 When a payout fails (bank rejection or retry exhaustion), the `transition_to()` method creates a CREDIT ledger entry **in the same transaction** as the state change to `failed`. If either write fails, both roll back. Funds cannot get stranded.
 
 **File:** `payouts/models.py` lines 100-109
 
-### 6. Celery Workers Are Suspects
+### 6. Celery Workers Are Suspects (P8)
 
 Workers assume duplicate delivery. Every task:
 1. Acquires `SELECT FOR UPDATE` on the payout row
@@ -148,7 +167,7 @@ The `process_payout` task simulates bank settlement:
 
 **File:** `workers/tasks.py` → `process_payout()`, `_complete_payout()`, `_fail_payout_with_refund()`
 
-### 7. Stuck Payout Detection
+### 7. Stuck Payout Detection (P7, P8, P10)
 
 `retry_stuck_payouts` runs periodically (every 30s via Celery beat / external cron). It finds processing payouts where `updated_at` is older than 30 seconds (worker heartbeat). For each:
 
@@ -157,7 +176,7 @@ The `process_payout` task simulates bank settlement:
 
 **File:** `workers/tasks.py` → `retry_stuck_payouts()`
 
-### 8. Money Is Integers (Paise)
+### 8. Money Is Integers — Paise (P9)
 
 All amounts are stored as `PositiveBigIntegerField` in paise (1 INR = 100 paise). No floats, no decimals, no `Decimal`. Display conversion uses integer arithmetic only:
 

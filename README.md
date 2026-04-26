@@ -34,13 +34,19 @@ For a deep-dive into how everything works, read **[EXPLAINER.md](./EXPLAINER.md)
 
 ---
 
-## Key Design Decisions
+## Key Design Decisions (Stripe Engineering Principles)
 
-- **No balance column** — Balance = `SUM(CREDIT) - SUM(DEBIT)` from the append-only ledger. No mutable state to corrupt.
-- **PostgreSQL required** — `SELECT FOR UPDATE` row locks prevent concurrent payout double-spend. SQLite silently ignores this.
-- **State machine in the model** — `PayoutRequest.transition_to()` enforces legal transitions, acquires row locks, and creates atomic refund credits on failure.
-- **Stripe-style idempotency** — Every mutation needs an `Idempotency-Key` header. Full responses are stored for byte-perfect replay.
-- **Money as integers** — All amounts in paise (integer). No floats anywhere. Display uses `//` and `%`.
+Built on 10 non-negotiable Stripe engineering principles (P1–P10). Each is enforced at the code level, not just documented:
+
+- **P3 — Immutable ledger** — Balance = `SUM(CREDIT) - SUM(DEBIT)`. No balance column. `LedgerEntry.save()` rejects updates, `delete()` always raises.
+- **P5 — Lock before you read** — `SELECT FOR UPDATE` on the merchant row before computing balance. PostgreSQL row locks prevent concurrent double-spend. SQLite silently ignores this — PostgreSQL is mandatory.
+- **P4 — State machine at model layer** — `PayoutRequest.transition_to()` enforces legal transitions, acquires row locks, and creates atomic refund credits on failure. Illegal transitions raise `InvalidStateTransition`.
+- **P2 — Stripe-style idempotency** — Every mutation needs an `Idempotency-Key` header. Full responses stored for byte-perfect replay. 24-hour expiry window.
+- **P9 — Money as integers** — All amounts in paise (`PositiveBigIntegerField`). Display uses `//` and `%`, never float division.
+- **P10 — Atomic failure recovery** — On payout failure, CREDIT refund is created in the same DB transaction as the state change. Both commit or both rollback.
+- **P8 — Workers are suspects** — Every Celery task re-locks and re-checks state. Duplicate delivery is a no-op.
+
+Full principle mapping with code references → **[EXPLAINER.md](./EXPLAINER.md)**
 
 ---
 
