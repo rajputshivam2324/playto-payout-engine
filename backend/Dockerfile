@@ -11,10 +11,11 @@ COPY ./requirements.txt /app/requirements.txt
 RUN pip install -r requirements.txt gunicorn
 
 COPY . /app/
+RUN chmod +x /app/start.sh
 
-ENV DJANGO_SETTINGS_MODULE=config.settings.production
+ENV DJANGO_SETTINGS_MODULE=config.settings.local
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2"]
+CMD ["./start.sh"]
