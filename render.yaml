@@ -109,7 +109,6 @@ services:
     runtime: static
     buildCommand: cd frontend && npm ci && npm run build
     staticPublishPath: ./frontend/dist
-    plan: free
     envVars:
       - key: VITE_API_BASE_URL
         value: https://playto-api.onrender.com/api/v1
