@@ -14,6 +14,7 @@ from ledger.views import LedgerEntryListView
 from merchants.views import BankAccountDetailView, BankAccountListCreateView, MerchantMeView, SignupView, MerchantSeedView
 from payouts.views import PayoutDetailView, PayoutListCreateView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from workers.views import TriggerScheduledTasksView
 
 urlpatterns = [
     # Admin is enabled in Phase 1 so seeded money objects can be inspected locally.
@@ -38,4 +39,6 @@ urlpatterns = [
     path("api/v1/payouts/<uuid:pk>/", PayoutDetailView.as_view(), name="payout_detail"),
     # Ledger feed is read-only and paginated by DRF settings.
     path("api/v1/ledger/", LedgerEntryListView.as_view(), name="ledger_list"),
+    # Ops: external cron service hits this to fire periodic tasks (replaces beat).
+    path("ops/cron/", TriggerScheduledTasksView.as_view(), name="trigger_cron"),
 ]

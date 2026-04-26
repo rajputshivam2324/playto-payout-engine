@@ -6,7 +6,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: free
-    startCommand: >
+    dockerCommand: >
       sh -c "python manage.py migrate &&
              python manage.py seed_merchants || true &&
              gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2"
@@ -52,6 +52,8 @@ services:
           name: playto-redis
           type: keyvalue
           property: connectionString
+      - key: CRON_SECRET
+        generateValue: true
 
   # ── Celery Worker ─────────────────────────────────────────────────────────
   - type: worker
@@ -60,7 +62,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: free
-    startCommand: celery -A config worker -l info
+    dockerCommand: celery -A config worker -l info
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
@@ -100,55 +102,6 @@ services:
           type: keyvalue
           property: connectionString
 
-  # ── Celery Beat (cron) ────────────────────────────────────────────────────
-  # Beat replaced by a Render cron job — free workers spin down after 15 min
-  # of inactivity and beat cannot reliably fire schedules.
-  - type: cron
-    name: playto-scheduler
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    plan: free
-    schedule: "*/5 * * * *"
-    startCommand: python manage.py trigger_scheduled_tasks
-    envVars:
-      - key: DJANGO_SETTINGS_MODULE
-        value: config.settings.production
-      - key: SECRET_KEY
-        fromService:
-          name: playto-api
-          type: web
-          envVarKey: SECRET_KEY
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: playto-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: playto-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: playto-db
-          property: password
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: playto-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: playto-db
-          property: port
-      - key: CELERY_BROKER_URL
-        fromService:
-          name: playto-redis
-          type: keyvalue
-          property: connectionString
-      - key: CELERY_RESULT_BACKEND
-        fromService:
-          name: playto-redis
-          type: keyvalue
-          property: connectionString
 
   # ── Vite Frontend (Static Site) ───────────────────────────────────────────
   - type: web
