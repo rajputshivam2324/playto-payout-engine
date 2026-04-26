@@ -6,6 +6,7 @@ services:
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     plan: free
+    dockerCommand: ./start.sh
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.production
