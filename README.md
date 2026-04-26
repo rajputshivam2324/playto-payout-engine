@@ -9,7 +9,7 @@
 | **Frontend** | [playto-frontend-m4j7.onrender.com](https://playto-frontend-m4j7.onrender.com/) |
 | **Backend API** | [playto-api-550a.onrender.com](https://playto-api-550a.onrender.com) |
 
-> Login with `rahul` / `playto12345` or create a new account.
+> Create an account and pick a business persona to seed demo data.
 
 ---
 
@@ -76,12 +76,7 @@ npm run dev
 docker compose up -d
 ```
 
-Dashboard → `http://localhost:5173`
-
-Default logins:
-- **rahul** / playto12345
-- **ananya** / playto12345
-- **vikram** / playto12345
+Dashboard → `http://localhost:5173` — sign up, pick a persona, start creating payouts.
 
 ---
 
