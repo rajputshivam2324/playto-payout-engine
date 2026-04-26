@@ -18,7 +18,7 @@ services:
           type: web
           property: host
       - key: CORS_ALLOWED_ORIGINS
-        value: https://playto-frontend.onrender.com
+        value: https://playto-frontend.onrender.com,https://playto-frontend-550a.onrender.com
       - key: POSTGRES_DB
         fromDatabase:
           name: playto-db
@@ -62,7 +62,7 @@ services:
     staticPublishPath: ./frontend/dist
     envVars:
       - key: VITE_API_BASE_URL
-        value: https://playto-api.onrender.com/api/v1
+        value: https://playto-api-550a.onrender.com/api/v1
 
   # ── Redis (Key Value) ────────────────────────────────────────────────────
   - type: keyvalue
