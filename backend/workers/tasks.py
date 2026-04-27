@@ -11,7 +11,6 @@ Key design decisions:
 
 import logging
 import random
-import time
 from datetime import timedelta
 
 from celery import shared_task
@@ -25,7 +24,8 @@ from payouts.models import InvalidStateTransition, PayoutRequest
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=3, ignore_result=True, acks_late=True)
+@shared_task(bind=True, max_retries=3, ignore_result=True, acks_late=True,
+             soft_time_limit=90, time_limit=120)
 def process_payout(self, payout_id):
     """
     Simulate bank settlement for a payout.
@@ -33,6 +33,11 @@ def process_payout(self, payout_id):
     Stripe P8: The task locks the payout row and re-checks state before doing work.
     Stripe P4: State changes go through PayoutRequest.transition_to().
     Stripe P10: Failed settlement refunds are created in the same DB transaction as failure.
+
+    soft_time_limit=90 / time_limit=120: A real bank API that hangs indefinitely would
+    block the worker forever without these guards. SoftTimeLimitExceeded is caught by
+    Celery and the task exits cleanly; the hard limit terminates the process as a last resort.
+    retry_stuck_payouts then detects the payout via the updated_at heartbeat and re-enqueues it.
 
     Args:
         self: Bound Celery task instance, used for broker-level retries on unexpected errors.
@@ -82,10 +87,12 @@ def process_payout(self, payout_id):
         _fail_payout_with_refund(payout_id, "bank_settlement_failed")
         return
 
-    # The sleep deliberately leaves the payout in processing with an old updated_at heartbeat.
-    # retry_stuck_payouts will decide whether to retry or fail/refund atomically.
-    logger.warning("process_payout: payout=%s simulated bank hang", payout_id)
-    time.sleep(60)
+    # The >= 0.90 branch simulates a bank hang by returning without settling.
+    # The payout stays in PROCESSING with an old updated_at heartbeat.
+    # retry_stuck_payouts detects it after 30 s and re-enqueues or fails atomically.
+    # Previously this used time.sleep(60), which blocked the whole worker process and
+    # starved all other tasks — including retry_stuck_payouts itself.
+    logger.warning("process_payout: payout=%s simulated bank hang — returning without settling", payout_id)
 
 
 def _complete_payout(payout_id):
@@ -162,6 +169,10 @@ def retry_stuck_payouts():
     Returns:
         Dict with counts for observability in worker logs.
     """
+    # Snapshot cutoff once before the scan so both the initial query filter and the
+    # per-row re-check inside the lock use the same timestamp. Computing cutoff inside
+    # the loop would allow a payout whose updated_at is refreshed during a long loop to
+    # slip through the guard on a later iteration with a different cutoff value.
     cutoff = timezone.now() - timedelta(seconds=30)
     scanned = retried = failed = skipped = 0
 

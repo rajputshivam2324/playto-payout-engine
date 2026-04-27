@@ -71,16 +71,17 @@ def rupees_from_paise(amount_paise):
     Format paise as a rupee string for client-facing errors.
 
     Args:
-        amount_paise: Integer money amount in paise.
+        amount_paise: Integer money amount in paise (may be negative for error messages).
 
     Returns:
-        Rupee string with two decimal places.
+        Rupee string with two decimal places, with leading minus sign if negative.
     """
-    # Integer arithmetic only — float division can introduce IEEE 754 rounding artifacts
-    # on certain paise values, which violates the money-as-integers invariant. (P9)
-    whole = amount_paise // 100
-    fractional = abs(amount_paise) % 100
-    return f"₹{whole:,}.{fractional:02d}"
+    # Use divmod on the absolute value so Python's floor-division behaviour for
+    # negative numbers does not produce an incorrect sign on the fractional part.
+    # e.g. -50 // 100 == -1 in Python, giving "₹-1.50" instead of "-₹0.50". (P9)
+    sign = "-" if amount_paise < 0 else ""
+    whole, fractional = divmod(abs(amount_paise), 100)
+    return f"{sign}₹{whole:,}.{fractional:02d}"
 
 
 class PayoutListCreateView(APIView):
@@ -116,15 +117,18 @@ class PayoutListCreateView(APIView):
         merchant = merchant_for_user(request.user)
 
         # Step 2: Parse and validate request body (amount_paise, bank_account_id).
+        # Validation logic lives entirely in PayoutCreateSerializer; views must not re-inspect
+        # raw request data to infer error codes — that duplicates and can contradict the serializer.
         serializer = PayoutCreateSerializer(data=request.data)
         if not serializer.is_valid():
             if "amount_paise" in serializer.errors:
-                code = "amount_must_be_positive"
-                message = "amount_paise must be positive."
-                if request.data.get("amount_paise") and str(request.data.get("amount_paise")).isdigit() and int(request.data.get("amount_paise")) > 10_000_000:
-                    code = "amount_exceeds_maximum"
-                    message = "amount_paise exceeds the maximum allowed payout."
-                # Clients should correct the amount before retrying this request.
+                # The serializer raises distinct messages for non-positive and over-maximum amounts.
+                # Map those messages to stable error codes without re-parsing the raw value.
+                error_message = serializer.errors["amount_paise"][0]
+                if "exceeds" in str(error_message):
+                    code, message = "amount_exceeds_maximum", "amount_paise exceeds the maximum allowed payout."
+                else:
+                    code, message = "amount_must_be_positive", "amount_paise must be positive."
                 return error_response(code, message, "amount_paise", status.HTTP_400_BAD_REQUEST)
             # Clients should send a valid UUID bank_account_id before retrying.
             return error_response("invalid_bank_account", "bank_account_id must be a valid UUID.", "bank_account_id", status.HTTP_400_BAD_REQUEST)

@@ -20,6 +20,31 @@ class ImmutableLedgerEntryError(RuntimeError):
     """Raised when code tries to mutate or delete a ledger entry."""
 
 
+class ImmutableQuerySet(models.QuerySet):
+    """
+    QuerySet that rejects bulk deletes and updates on ledger entries.
+
+    Django's admin "delete selected" action calls QuerySet.delete(), which bypasses
+    the instance-level delete() override. This QuerySet closes that gap so no code
+    path — ORM, admin, or shell — can remove or overwrite ledger history.
+    """
+
+    def delete(self):
+        # Bulk delete would silently remove money history without calling instance .delete().
+        raise ImmutableLedgerEntryError("Ledger entries are append-only and cannot be deleted.")
+
+    def update(self, **kwargs):
+        # Bulk update would rewrite money rows without the instance .save() guard.
+        raise ImmutableLedgerEntryError("Ledger entries are append-only and cannot be updated.")
+
+
+class ImmutableLedgerManager(models.Manager):
+    """Custom manager that returns an ImmutableQuerySet for all LedgerEntry queries."""
+
+    def get_queryset(self):
+        return ImmutableQuerySet(self.model, using=self._db)
+
+
 class LedgerEntry(models.Model):
     """Append-only money movement row used as the source of truth."""
 
@@ -38,6 +63,11 @@ class LedgerEntry(models.Model):
     reference_id = models.CharField(max_length=64)  # CharField supports payout UUIDs and seed references without foreign-key coupling.
     description = models.CharField(max_length=255)  # Bounded text records why this immutable money movement exists.
     created_at = models.DateTimeField(default=timezone.now, editable=False)  # Default timestamp is set once and can be seeded without later updates.
+
+    # ImmutableLedgerManager replaces the default manager so QuerySet.delete() and
+    # QuerySet.update() raise ImmutableLedgerEntryError, closing the Django admin
+    # bulk-action bypass that the instance-level .delete() override cannot cover.
+    objects = ImmutableLedgerManager()
 
     class Meta:
         ordering = ["-created_at"]
