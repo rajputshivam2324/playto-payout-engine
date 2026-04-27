@@ -9,7 +9,15 @@ DEBUG = False
 
 SECRET_KEY = os.environ["SECRET_KEY"]  # hard crash if missing — intentional
 
-ALLOWED_HOSTS = [os.environ.get("RENDER_EXTERNAL_HOSTNAME", "*")]
+# Hard crash if the hostname is not configured — falling back to "*" would accept any
+# Host header and silently expose the API to host-header injection attacks.
+_render_hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if not _render_hostname:
+    raise RuntimeError(
+        "RENDER_EXTERNAL_HOSTNAME environment variable is required in production. "
+        "Set it to the public hostname (e.g. myapp.onrender.com)."
+    )
+ALLOWED_HOSTS = [_render_hostname]
 
 CORS_ALLOWED_ORIGINS = [
     o.strip()
